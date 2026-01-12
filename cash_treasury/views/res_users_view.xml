@@ -1,0 +1,20 @@
+<odoo>
+  <data>
+
+    <record id="view_users_form_cash_treasury" model="ir.ui.view">
+      <field name="name">res.users.form.cash.treasury</field>
+      <field name="model">res.users</field>
+      <field name="inherit_id" ref="base.view_users_form"/>
+      <field name="arch" type="xml">
+        <xpath expr="//sheet/notebook" position="inside">
+          <page string="Cash Treasury">
+            <group>
+              <field name="cash_treasury_journal_ids" widget="many2many_tags"/>
+            </group>
+          </page>
+        </xpath>
+      </field>
+    </record>
+
+  </data>
+</odoo>
