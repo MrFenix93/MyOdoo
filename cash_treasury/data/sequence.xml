@@ -1,0 +1,8 @@
+<odoo>
+    <record id="seq_cash_treasury_out" model="ir.sequence">
+        <field name="name">Cash Treasury Out</field>
+        <field name="code">cash.treasury.out</field>
+        <field name="padding">4</field>
+        <field name="company_id" eval="False"/>
+    </record>
+</odoo>

@@ -1,0 +1,242 @@
+<odoo>
+    <data>
+
+        <!-- ========================= -->
+        <!-- LIST VIEW -->
+        <!-- ========================= -->
+        <record id="view_cash_out_list" model="ir.ui.view">
+            <field name="name">cash.treasury.out.list</field>
+            <field name="model">cash.treasury.out</field>
+            <field name="arch" type="xml">
+                <list>
+                    <field name="name"/>
+                    <field name="journal_id"/>
+                    <field name="destination_account_id"/>
+                    <field name="partner_id"/>
+                    <field name="amount"/>
+                    <field name="payment_date"/>
+                    <field name="state"/>
+                </list>
+            </field>
+        </record>
+
+        <!-- ========================= -->
+        <!-- SEARCH VIEW -->
+        <!-- ========================= -->
+        <record id="view_cash_out_search" model="ir.ui.view">
+    <field name="name">cash.treasury.out.search</field>
+    <field name="model">cash.treasury.out</field>
+    <field name="arch" type="xml">
+        <search>
+
+    <!-- FILTER BUTTONS -->
+    <filter name="filter_draft"
+            string="Draft"
+            domain="[('state','=','draft')]"/>
+
+    <filter name="filter_reviewed"
+            string="Reviewed"
+            domain="[('state','=','reviewed')]"/>
+
+    <filter name="filter_approved"
+            string="Approved"
+            domain="[('state','=','approved')]"/>
+
+    <filter name="filter_paid"
+            string="Paid"
+            domain="[('state','=','paid')]"/>
+
+    <!-- GROUP BY-->
+    <group expand="0" string="Group By">
+        <filter name="group_state"
+                string="State"
+                context="{'group_by':'state'}"/>
+  	<filter name="group_journal"
+           	 string="Journal"
+           	 context="{'group_by':'journal_id'}"/>
+
+    </group>
+
+</search>
+    </field>
+</record>
+
+        <!-- ========================= -->
+        <!-- FORM VIEW -->
+        <!-- ========================= -->
+        <record id="view_cash_out_form" model="ir.ui.view">
+            <field name="name">cash.treasury.out.form</field>
+            <field name="model">cash.treasury.out</field>
+            <field name="arch" type="xml">
+            <form>
+
+                <!-- ================= HEADER ================= -->
+                <header>
+
+                    <button name="action_review"
+                            type="object"
+                            string="Review"
+                            class="btn-primary"
+                            groups="cash_treasury.group_cash_reviewer"
+                            invisible="state != 'draft'"/>
+
+                    <button name="action_approve"
+                            type="object"
+                            string="Approve"
+                            class="btn-primary"
+                            groups="cash_treasury.group_cash_accountant"
+                            invisible="state != 'reviewed'"/>
+
+                    <button name="action_back_to_draft"
+                            type="object"
+                            string="Reset to Draft"
+                            class="btn-secondary"
+                            groups="cash_treasury.group_cash_accountant"
+                            invisible="state != 'reviewed'"/>
+
+                    <button name="action_pay"
+                            type="object"
+                            string="Paid"
+                            class="btn-primary"
+                            groups="cash_treasury.group_cash_entry"
+                            invisible="state != 'approved'"/>
+
+                    <button name="action_super_cancel_paid_to_draft"
+                            type="object"
+                            string="Cancel Paid ? Draft (Super)"
+                            class="btn-danger"
+                            groups="cash_treasury.group_cash_super_approver"
+                            invisible="state != 'paid'"/>
+
+                    <field name="state" widget="statusbar"/>
+
+                </header>
+
+                <!-- ================= BODY ================= -->
+                <sheet>
+
+                    <h1>
+                        <field name="name"
+                               placeholder="Draft"
+                               modifiers="{'readonly': [['state','!=','draft']]}"/>
+                    </h1>
+
+                    <group col="2">
+
+                        <group>
+                            <field name="pay_to_type"
+                                   widget="radio"
+ 				   required="1"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="account_id"
+                                   invisible="pay_to_type != 'account'"
+				    required="pay_to_type == 'account'"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="partner_id"
+                                   invisible="pay_to_type != 'partner'"
+				   required="pay_to_type == 'partner'"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="amount"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="date"
+                                   string="Document Date"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="notes"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="bills_loaded" invisible="1"/>
+                        </group>
+
+                        <group>
+
+                            <!-- Journal -->
+                            <field name="journal_id"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <field name="payment_method_id"
+                                   modifiers="{'readonly': [['state','!=','draft']]}"/>
+
+                            <!-- Payment Date : Editable ONLY for Cash Entry in Approved -->
+                            <field name="payment_date"
+                                   groups="cash_treasury.group_cash_entry"
+                                   invisible="state not in ('approved','paid')"
+                                   modifiers="{'readonly': [['state','!=','approved']]}"/>
+
+                            <!-- Payment Date : Readonly for others -->
+                            <field name="payment_date"
+                                   groups="cash_treasury.group_cash_reviewer,
+                                           cash_treasury.group_cash_accountant,
+                                           cash_treasury.group_cash_super_approver"
+                                   invisible="state not in ('approved','paid')"
+                                   readonly="1"/>
+
+                            <!-- Journal Entry -->
+                            <field name="journal_entry_id"
+                                   readonly="1"
+                                   invisible="journal_entry_id == False"/>
+
+                            <!-- Reversal Entry -->
+                            <field name="reversal_entry_id"
+                                   readonly="1"
+                                   invisible="reversal_entry_id == False"/>
+
+                        </group>
+
+                    </group>
+
+                    <!-- ================= LOAD VENDOR BILLS BUTTON ================= -->
+                    <button name="action_load_vendor_bills"
+                            type="object"
+                            string="Load Vendor Bills"
+                            class="btn-secondary"
+                            invisible="pay_to_type != 'partner'
+                                       or state != 'draft'
+                                       or partner_id == False"/>
+
+                    <!-- ================= VENDOR BILLS ALLOCATION ================= -->
+                    <group string="Vendor Bills Allocation"
+                           invisible="pay_to_type != 'partner' or bills_loaded == False">
+
+                        <separator string=""/>
+
+                        <field name="allocation_line_ids"
+                               nolabel="1"
+                               create="0"
+                               delete="0"
+                               options="{'no_open': True}"
+                               modifiers="{'readonly': [['state','!=','draft']]}">
+
+                            <list editable="bottom" create="0" delete="0">
+                                <field name="selected" widget="boolean_toggle"/>
+                                <field name="invoice_id" readonly="1" options="{'no_open': True}"/>
+                                <field name="name" readonly="1"/>
+                                <field name="residual_amount" readonly="1"/>
+                                <field name="amount_to_pay"
+                                       modifiers="{'readonly': [['selected','=',false]]}"/>
+                            </list>
+                        </field>
+
+                        <group col="4">
+                            <field name="total_allocated" readonly="1"/>
+                            <field name="allocation_diff" readonly="1"/>
+                        </group>
+
+                    </group>
+
+                </sheet>
+
+                <chatter/>
+            </form>
+
+        </field>
+    </record>
+
+    </data>
+
+</odoo>
+ 
