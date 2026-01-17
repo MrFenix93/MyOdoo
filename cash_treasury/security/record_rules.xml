@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+  <data>
+
+    <!-- ADMIN -->
+    <record id="rule_cash_out_admin_all" model="ir.rule">
+      <field name="name">Cash Out Admin All</field>
+      <field name="model_id" ref="model_cash_treasury_out"/>
+      <field name="domain_force">[(1,'=',1)]</field>
+      <field name="groups" eval="[(4, ref('base.group_system'))]"/>
+    </record>
+
+    <record id="rule_cash_in_admin_all" model="ir.rule">
+      <field name="name">Cash In Admin All</field>
+      <field name="model_id" ref="model_cash_treasury_in"/>
+      <field name="domain_force">[(1,'=',1)]</field>
+      <field name="groups" eval="[(4, ref('base.group_system'))]"/>
+    </record>
+
+
+<record id="rule_cash_treasury_report_admin" model="ir.rule">
+  <field name="name">Cash Treasury Report - Admin See All</field>
+  <field name="model_id" ref="model_cash_treasury_report_line"/>
+  <field name="domain_force">[(1, '=', 1)]</field>
+  <field name="groups" eval="[(4, ref('base.group_system'))]"/>
+</record>
+
+<record id="rule_cash_transaction_analysis_admin" model="ir.rule">
+  <field name="name">Cash Transaction Analysis - Admin See All</field>
+  <field name="model_id" ref="model_cash_transaction_analysis"/>
+  <field name="domain_force">[(1, '=', 1)]</field>
+  <field name="groups" eval="[(4, ref('base.group_system'))]"/>
+</record>
+
+
+
+   <!-- USERS -->
+<record id="rule_cash_out_user" model="ir.rule">
+  <field name="name">Cash Out By User Journals</field>
+  <field name="model_id" ref="model_cash_treasury_out"/>
+  <field name="domain_force">
+    [('journal_id','in', user.sudo().cash_treasury_journal_ids.ids)]
+  </field>
+  <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+  <field name="global" eval="True"/>
+</record>
+
+<record id="rule_cash_in_user" model="ir.rule">
+  <field name="name">Cash In By User Journals</field>
+  <field name="model_id" ref="model_cash_treasury_in"/>
+  <field name="domain_force">
+    [('journal_id','in', user.sudo().cash_treasury_journal_ids.ids)]
+  </field>
+  <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+  <field name="global" eval="True"/>
+</record>
+
+
+<record id="rule_cash_treasury_report_user" model="ir.rule">
+    <field name="name">Cash Treasury Report - Limit by Account</field>
+    <field name="model_id" ref="model_cash_treasury_report_line"/>
+    <field name="domain_force">
+        [('account_id', 'in', user.sudo().cash_treasury_journal_ids.default_account_id.ids)]
+    </field>
+    <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    <field name="global" eval="True"/>
+</record>
+
+<record id="rule_cash_transaction_analysis_user_by_accounts" model="ir.rule">
+  <field name="name">Cash Transaction Analysis - User Accounts Only</field>
+  <field name="model_id" ref="model_cash_transaction_analysis"/>
+  <field name="domain_force">
+    [('account_id', 'in', user.cash_treasury_journal_ids.default_account_id.ids)]
+  </field>
+  <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+  <field name="global" eval="True"/>
+</record>
+
+
+  </data>
+</odoo>
+

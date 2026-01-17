@@ -1,0 +1,56 @@
+<odoo>
+  <data>
+    <record id="view_cash_transaction_analysis_list" model="ir.ui.view">
+      <field name="name">cash.transaction.analysis.list</field>
+      <field name="model">cash.transaction.analysis</field>
+      <field name="arch" type="xml">
+        <list string="Cash Transaction Analysis" create="false" delete="false">
+          <field name="date"/>
+          <field name="move_id"/>
+          <field name="label"/>
+          <field name="counter_account_id"   string="Account"/>
+          <field name="counter_partner_id" string="Partner"/>
+          <field name="debit"/>
+          <field name="credit"/>
+          <field name="balance_str"/>
+        </list>
+      </field>
+    </record>
+
+
+<record id="view_cash_transaction_analysis_search" model="ir.ui.view">
+    <field name="name">cash.transaction.analysis.search</field>
+    <field name="model">cash.transaction.analysis</field>
+    <field name="arch" type="xml">
+        <search string="Cash Transaction Analysis Search">
+            <field name="account_id"/>
+            <field name="counter_partner_id"/>
+            <field name="date"/>
+            <field name="debit"/>
+            <field name="credit"/>
+
+<group expand="0" string="Group By">
+                <filter name="group_account" string="Account" context="{'group_by': 'account_id'}"/>
+                <filter name="group_date" string="Date" context="{'group_by': 'date'}"/>
+            </group>
+
+        </search>
+    </field>
+</record>
+
+    <record id="action_cash_transaction_analysis" model="ir.actions.act_window">
+      <field name="name">Cash Transaction Analysis</field>
+      <field name="res_model">cash.transaction.analysis</field>
+      <field name="view_mode">list</field>
+      <field name="context">{'group_by': 'account_id'}</field>
+    </record>
+
+    <menuitem
+      id="menu_cash_transaction_analysis"
+      name="Cash Transaction Analysis"
+      parent="cash_treasury.menu_cash_treasury_root"
+      action="action_cash_transaction_analysis"
+      sequence="35"
+    />
+  </data>
+</odoo>
