@@ -24,3 +24,6 @@ access_cash_in_alloc_super,cash.in.alloc.super,model_cash_treasury_in_allocation
 
 
 access_cash_treasury_report_line,cash.treasury.report.line,model_cash_treasury_report_line,,1,1,1,1
+access_cash_transaction_analysis,cash.transaction.analysis,model_cash_transaction_analysis,,1,1,1,1
+
+

@@ -24,6 +24,7 @@ Cash Treasury module to manage Cash Out vouchers with:
 	"views/cash_in_view.xml",
 	"views/res_users_view.xml",
 	"views/cash_report_view.xml",
+	"views/cash_transaction_analysis_view.xml",
 	"views/menu.xml",
     ],
     "application": True,
