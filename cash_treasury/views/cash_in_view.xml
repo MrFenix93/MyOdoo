@@ -6,7 +6,7 @@
       <field name="name">cash.treasury.in.list</field>
       <field name="model">cash.treasury.in</field>
       <field name="arch" type="xml">
-        <list>
+        <list import="false">
           <field name="name"/>
           <field name="journal_id"/>
           <field name="destination_account_id"/>

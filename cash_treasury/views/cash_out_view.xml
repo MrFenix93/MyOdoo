@@ -8,7 +8,7 @@
             <field name="name">cash.treasury.out.list</field>
             <field name="model">cash.treasury.out</field>
             <field name="arch" type="xml">
-                <list>
+                <list import="false">
                     <field name="name"/>
                     <field name="journal_id"/>
                     <field name="destination_account_id"/>
