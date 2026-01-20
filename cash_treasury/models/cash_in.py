@@ -4,6 +4,36 @@ from odoo.tools.float_utils import float_compare
 
 
 # =====================================================
+# ALLOCATION LINE FOR MULTI ACCOUNT
+# =====================================================
+class CashTreasuryInMultiAccountLine(models.Model):
+    _name = 'cash.treasury.in.multi.account.line'
+    _description = 'Cash Treasury In Multi Account Line'
+
+    cash_in_id = fields.Many2one(
+        'cash.treasury.in',
+        string="Cash In",
+        required=True,
+        ondelete="cascade"
+    )
+
+    account_id = fields.Many2one(
+        'account.account',
+        string="Account",
+        required=True
+    )
+
+    amount = fields.Float(
+        string="Amount",
+        required=True
+    )
+
+    notes = fields.Char(
+        string="Notes"
+    )
+
+
+# =====================================================
 # CASH IN
 # =====================================================
 class CashTreasuryIn(models.Model):
@@ -32,15 +62,39 @@ class CashTreasuryIn(models.Model):
         required=True,
         default="account",
     )
+    
+    multi_account = fields.Boolean(string="Multi Account", default=False)
+
+    multi_account_line_ids = fields.One2many(
+        'cash.treasury.in.multi.account.line',
+        'cash_in_id',
+        string="Multi Accounts",
+        copy=False
+    )
+    
 
     partner_id = fields.Many2one("res.partner")
     account_id = fields.Many2one("account.account")
+    
+    
+    amount_manual = fields.Monetary(
+        string="Amount",
+        currency_field="currency_id",
+        default=0.0,
+        required=False,
+    )
 
-    amount = fields.Monetary(required=True)
+
+    amount = fields.Monetary(
+        string="Amount",
+        compute="_compute_amount",
+        inverse="_inverse_amount",
+        store=True,
+        required=True,
+    )
     date = fields.Date(default=fields.Date.context_today, required=True, tracking=True)
     notes = fields.Text()
 
-    # actual collection date (used for posting)
     collection_date = fields.Date(tracking=True)
 
     journal_id = fields.Many2one(
@@ -72,8 +126,13 @@ class CashTreasuryIn(models.Model):
         compute="_compute_destination_account",
         store=True,
     )
+    
+    destination_accounts_text = fields.Char(
+        string="Destination Accounts",
+        compute="_compute_destination_accounts_text",
+        store=False,
+    )
 
-    # Allocation with customer invoices
     invoices_loaded = fields.Boolean(default=False, copy=False)
 
     allocation_line_ids = fields.One2many(
@@ -99,26 +158,20 @@ class CashTreasuryIn(models.Model):
     # DOMAIN METHOD FOR JOURNAL FILTERING
     # =================================================
     def _get_journal_domain(self):
-        """Filter journals based on user permissions"""
         try:
-            # ÌíÈ ÇáíæÒÑ Çááí ÚÇãá action
             user = self.env.user
             
-            # Super users (Admin) see all cash/bank journals
             if user.has_group('base.group_system'):
                 return [('type', 'in', ('cash', 'bank'))]
             
-            # Regular users see only journals they have permission for
             journal_ids = user.cash_treasury_journal_ids.ids
             
-            # If no journals assigned, show none
             if not journal_ids:
-                return [('id', '=', False)]  # Empty domain
+                return [('id', '=', False)]
             
             return [('id', 'in', journal_ids), ('type', 'in', ('cash', 'bank'))]
         
         except Exception as e:
-            # Fallback if something goes wrong
             import logging
             logging.error("Journal domain error: %s", str(e))
             return [('type', 'in', ('cash', 'bank'))]
@@ -128,12 +181,9 @@ class CashTreasuryIn(models.Model):
     # =================================================
     @api.onchange('journal_id')
     def _onchange_journal_id(self):
-        """Verify user has permission for selected journal"""
-        # Admin can select any journal without warning
         if self.env.user.has_group('base.group_system'):
-            return  # ÇáÜ Admin íãÔí ÈÏæä ÊÍÐíÑ
+            return
         
-        # For non-admin users: check permissions
         if self.journal_id and self.env.user.id:
             user_journals = self.env.user.cash_treasury_journal_ids.ids
             if self.journal_id.id not in user_journals:
@@ -145,24 +195,15 @@ class CashTreasuryIn(models.Model):
                 return {'warning': warning}
 
     # =================================================
-    # HARD LOCK (ALLOW WORKFLOW ONLY)
+    # HARD LOCK
     # =================================================
     def write(self, vals):
-        """
-        Rules:
-        - Draft: editable by Cash In Entry (ACL controls)
-        - Approved/Posted: read-only (except workflow fields)
-        - Approved: Cash In Entry can set collection_date only
-        - Super Approver: can bypass lock (used for cancel posted -> draft)
-        """
-        # Super Approver bypass (ONE shared group)
         if (
             self.env.user.has_group("cash_treasury.group_cash_in_accountant")
             and set(vals.keys()).issubset({"state", "collection_date"})
         ):
             return super().write(vals)  
 
-        # Cash In Accountant can change state only
         if self.env.user.has_group("cash_treasury.group_cash_in_accountant"):
             allowed = {
                 "state",
@@ -180,7 +221,6 @@ class CashTreasuryIn(models.Model):
             "journal_entry_id",
             "reversal_entry_id",
             "name",
-            # chatter / technical
             "write_date",
             "message_ids",
             "message_follower_ids",
@@ -196,7 +236,6 @@ class CashTreasuryIn(models.Model):
         }
 
         for rec in self:
-            # Allow collection_date edit in Approved for Cash In Entry only
             if rec.state == "approved":
                 if (
                     self.env.user.has_group("cash_treasury.group_cash_in_entry")
@@ -234,13 +273,74 @@ class CashTreasuryIn(models.Model):
                     if rec.partner_id
                     else False
                 )
+    
+    @api.depends(
+        "multi_account",
+        "multi_account_line_ids.account_id",
+        "multi_account_line_ids.amount",
+        "destination_account_id",
+    )
+    def _compute_destination_accounts_text(self):
+        for rec in self:
+            if rec.multi_account:
+                parts = []
+                for line in rec.multi_account_line_ids:
+                    if line.account_id:
+                        parts.append(
+                            f"{line.account_id.code or ''} {line.account_id.name} ({line.amount or 0.0})"
+                        )
 
-    @api.depends("amount", "allocation_line_ids.amount_to_collect")
+                if not parts:
+                    rec.destination_accounts_text = False
+                else:
+                    if len(parts) > 2:
+                        rec.destination_accounts_text = " | ".join(parts[:2]) + " | ..."
+                    else:
+                        rec.destination_accounts_text = " | ".join(parts)
+
+            else:
+                if rec.destination_account_id:
+                    rec.destination_accounts_text = (
+                        f"{rec.destination_account_id.code or ''} {rec.destination_account_id.name}"
+                    )
+                else:
+                    rec.destination_accounts_text = False
+
+    @api.depends("amount_manual", "multi_account", "multi_account_line_ids.amount", "allocation_line_ids.amount_to_collect")
     def _compute_totals(self):
         for rec in self:
             total = sum(l.amount_to_collect or 0.0 for l in rec.allocation_line_ids)
             rec.total_allocated = total
             rec.allocation_diff = (rec.amount or 0.0) - total
+
+    @api.depends(
+        "multi_account",
+        "multi_account_line_ids.amount",
+        "amount_manual",
+        "invoices_loaded",
+        "allocation_line_ids.selected",
+        "allocation_line_ids.amount_to_collect",
+    )
+    def _compute_amount(self):
+        for rec in self:
+            if rec.multi_account:
+                rec.amount = sum(rec.multi_account_line_ids.mapped("amount")) or 0.0
+
+            elif rec.invoices_loaded and rec.receive_from_type == "partner":
+                selected_lines = rec.allocation_line_ids.filtered(
+                    lambda l: l.selected and (l.amount_to_collect or 0.0) > 0
+                )
+                rec.amount = sum(selected_lines.mapped("amount_to_collect")) or 0.0
+
+            else:
+                rec.amount = rec.amount_manual or 0.0
+
+    def _inverse_amount(self):
+        for rec in self:
+            if rec.multi_account:
+                rec.amount = sum(rec.multi_account_line_ids.mapped("amount"))
+            else:
+                rec.amount_manual = rec.amount
 
     # =================================================
     # ONCHANGE
@@ -259,13 +359,24 @@ class CashTreasuryIn(models.Model):
         if self.invoices_loaded:
             self.invoices_loaded = False
             self.allocation_line_ids = [(5, 0, 0)]
+            
+    @api.onchange("multi_account")
+    def _onchange_multi_account(self):
+        if self.multi_account:
+            self.receive_from_type = "account"
+            self.partner_id = False
+            self.account_id = False
+            self.amount_manual = 0.0
+            self.invoices_loaded = False
+            self.allocation_line_ids = [(5, 0, 0)]
+        else:
+            self.multi_account_line_ids = [(5, 0, 0)]
 
     # =================================================
     # CREATE METHOD
     # =================================================
     @api.model
     def create(self, vals):
-        # Auto-set journal if not provided and user has only one
         if 'journal_id' not in vals:
             user_journals = self.env.user.cash_treasury_journal_ids
             if len(user_journals) == 1:
@@ -280,6 +391,10 @@ class CashTreasuryIn(models.Model):
     # =================================================
     def action_load_customer_invoices(self):
         for rec in self:
+
+            if rec.multi_account:
+                raise UserError("You cannot load Customer Invoices in Multi Account mode.")
+
             if rec.receive_from_type != "partner":
                 raise UserError("Load Customer Invoices is only allowed for Partner receipts.")
             if not rec.partner_id:
@@ -320,10 +435,10 @@ class CashTreasuryIn(models.Model):
     # VALIDATIONS
     # =================================================
     
-    @api.constrains("amount")
+    @api.constrains("amount", "state")
     def _check_amount_positive(self):
         for rec in self:
-            if rec.amount is None or rec.amount <= 0:
+            if rec.state != "draft" and (rec.amount is None or rec.amount <= 0):
                 raise ValidationError(_("Amount must be greater than zero."))
         
     @api.constrains("state", "invoices_loaded", "allocation_line_ids.amount_to_collect", "amount")
@@ -343,6 +458,24 @@ class CashTreasuryIn(models.Model):
                 raise ValidationError(
                     "When customer invoices are loaded, total allocated must equal Cash In amount."
                 )
+                
+    @api.constrains("receive_from_type", "multi_account")
+    def _check_multi_account_only_for_account(self):
+        for rec in self:
+            if rec.multi_account and rec.receive_from_type != "account":
+                raise ValidationError(_("Multi Account is only allowed when Receive From Type is Account."))
+                
+    @api.constrains("multi_account", "partner_id")
+    def _check_no_partner_in_multi_account(self):
+        for rec in self:
+            if rec.multi_account and rec.partner_id:
+                raise ValidationError(_("Multi Account does not allow Partner."))
+                
+    @api.constrains("multi_account", "amount_manual")
+    def _check_no_manual_amount_in_multi_account(self):
+        for rec in self:
+            if rec.multi_account and rec.amount_manual:
+                raise ValidationError(_("Manual Amount is not allowed in Multi Account mode."))
 
     # =================================================
     # WORKFLOW
@@ -351,13 +484,12 @@ class CashTreasuryIn(models.Model):
         for rec in self:
             if rec.state != "draft":
                 raise UserError("Only draft records can be approved.")
-            # Accountant approves, then entry sets collection_date later
-            rec.write({"state": "approved", "collection_date": False})
+            rec.write({
+                "state": "approved",
+                "collection_date": False,
+            })
 
     def action_back_to_draft(self):
-        """
-        Accountant: back to draft BEFORE posting (approved -> draft)
-        """
         for rec in self:
             if rec.state != "approved":
                 raise UserError("Only approved records can be reset to draft.")
@@ -372,7 +504,7 @@ class CashTreasuryIn(models.Model):
             )
 
     # =================================================
-    # POST (CREATE ENTRY + RECONCILE)
+    # POST (CREATE ENTRY + RECONCILE) - MATCHING CASH_OUT
     # =================================================
     def action_post(self):
         for rec in self:
@@ -383,9 +515,7 @@ class CashTreasuryIn(models.Model):
 
             # ---------- SEQUENCE (on posting) ----------
             Sequence = self.env["ir.sequence"].sudo()
-
             seq_code = f"cash.in.{rec.journal_id.id}"
-
             sequence = Sequence.search([("code", "=", seq_code)], limit=1)
             if not sequence:
                 sequence = Sequence.create(
@@ -404,77 +534,108 @@ class CashTreasuryIn(models.Model):
             if not debit_account:
                 raise UserError("Journal has no default account.")
 
-            credit_account = (
-                rec.partner_id.property_account_receivable_id
-                if rec.receive_from_type == "partner"
-                else rec.account_id
-            )
-            if not credit_account:
-                raise UserError("Missing source account.")
-
             lines = []
 
-            # ---------- DEBIT LINE (Cash/Bank) ----------
-            lines.append(
-                (
-                    0,
-                    0,
-                    {
+            # =====================================================
+            # ? MULTI ACCOUNT MODE (NO PARTNER)
+            # =====================================================
+            if rec.multi_account:
+                if rec.invoices_loaded:
+                    raise UserError("Multi Account cannot be used with Customer Invoices allocation.")
+
+                if not rec.multi_account_line_ids:
+                    raise UserError("Please add Multi Account lines first.")
+
+                total = 0.0
+                for l in rec.multi_account_line_ids:
+                    if not l.account_id:
+                        raise UserError("Each Multi Account line must have an Account.")
+                    if not l.amount or l.amount <= 0:
+                        raise UserError("Each Multi Account line Amount must be greater than zero.")
+
+                    total += l.amount
+
+                    lines.append(
+                        (0, 0, {
+                            "account_id": l.account_id.id,
+                            "partner_id": False,   # ? NO PARTNER
+                            "credit": l.amount,
+                            "debit": 0.0,
+                            "name": seq_name,
+                        })
+                    )
+
+                # Debit line (Cash/Bank)
+                lines.append(
+                    (0, 0, {
+                        "account_id": debit_account.id,
+                        "debit": total,
+                        "credit": 0.0,
+                        "name": seq_name,
+                    })
+                )
+
+            # =====================================================
+            # ? NORMAL MODE (ACCOUNT/PARTNER)
+            # =====================================================
+            else:
+                credit_account = (
+                    rec.partner_id.property_account_receivable_id
+                    if rec.receive_from_type == "partner"
+                    else rec.account_id
+                )
+                if not credit_account:
+                    raise UserError("Missing source account.")
+
+                # ---------- DEBIT LINE (Cash/Bank) ----------
+                lines.append(
+                    (0, 0, {
                         "account_id": debit_account.id,
                         "debit": rec.amount,
                         "credit": 0.0,
                         "name": seq_name,
-                    },
+                    })
                 )
-            )
 
-            # ---------- WITH INVOICES ----------
-            if rec.invoices_loaded:
-                allocations = rec.allocation_line_ids.filtered(
-                    lambda l: l.selected and l.amount_to_collect > 0
-                )
-                if not allocations:
-                    raise UserError("Please select invoices and enter amounts.")
+                # ---------- WITH INVOICES ----------
+                if rec.invoices_loaded:
+                    allocations = rec.allocation_line_ids.filtered(
+                        lambda l: l.selected and l.amount_to_collect > 0
+                    )
+                    if not allocations:
+                        raise UserError("Please select invoices and enter amounts.")
 
-                total = sum(al.amount_to_collect for al in allocations)
+                    total = sum(al.amount_to_collect for al in allocations)
 
-                if float_compare(
-                    total,
-                    rec.amount or 0.0,
-                    precision_rounding=rec.currency_id.rounding,
-                ) != 0:
-                    raise UserError("Allocated total must equal Cash In amount.")
+                    if float_compare(
+                        total,
+                        rec.amount or 0.0,
+                        precision_rounding=rec.currency_id.rounding,
+                    ) != 0:
+                        raise UserError("Allocated total must equal Cash In amount.")
 
-                for al in allocations:
-                    lines.append(
-                        (
-                            0,
-                            0,
-                            {
+                    for al in allocations:
+                        lines.append(
+                            (0, 0, {
                                 "account_id": credit_account.id,
                                 "partner_id": rec.partner_id.id,
                                 "credit": al.amount_to_collect,
                                 "debit": 0.0,
                                 "name": seq_name,
-                            },
+                            })
                         )
-                    )
 
-            # ---------- WITHOUT INVOICES ----------
-            else:
-                lines.append(
-                    (
-                        0,
-                        0,
-                        {
+                # ---------- WITHOUT INVOICES ----------
+                else:
+                    lines.append(
+                        (0, 0, {
                             "account_id": credit_account.id,
                             "partner_id": rec.partner_id.id if rec.receive_from_type == "partner" else False,
                             "credit": rec.amount,
                             "debit": 0.0,
                             "name": seq_name,
-                        },
+                        })
                     )
-                )
 
             move = self.env["account.move"].create(
                 {
@@ -487,29 +648,63 @@ class CashTreasuryIn(models.Model):
             )
             move.action_post()
 
-            # ---------- RECONCILE ----------
-            if rec.invoices_loaded:
-                for al in rec.allocation_line_ids.filtered(
-                    lambda l: l.selected and l.amount_to_collect > 0
-                ):
-                    inv_lines = al.invoice_id.line_ids.filtered(
-                        lambda l: l.account_id.id == credit_account.id and not l.reconciled
-                    )
-                    pay_lines = move.line_ids.filtered(
-                        lambda l: l.account_id.id == credit_account.id and not l.reconciled
-                    )
-                    (inv_lines + pay_lines).reconcile()
+            # =====================================================
+            # RECONCILE (ONLY FOR CUSTOMER INVOICES)
+            # =====================================================
+            if rec.invoices_loaded and not rec.multi_account:
+                credit_account = rec.partner_id.property_account_receivable_id
 
-            rec.write(
-                {
-                    "name": seq_name,
-                    "journal_entry_id": move.id,
-                    "state": "posted",
-                }
-            )
+                allocations = rec.allocation_line_ids.filtered(
+                    lambda l: l.selected and (l.amount_to_collect or 0.0) > 0
+                )
+
+                
+                pay_lines_dict = {}
+                for pay_line in move.line_ids.filtered(
+                    lambda l: l.account_id.id == credit_account.id
+                    and not l.reconciled
+                    and l.account_id.reconcile
+                    and l.partner_id.id == rec.partner_id.id
+                ):
+                    # !!! CHANGED: credit instead of debit (áÃä Ïå ÞÈÖ ãä Úãíá)
+                    amount_key = pay_line.credit
+                    pay_lines_dict.setdefault(amount_key, []).append(pay_line)
+
+                
+                for al in allocations:
+                    inv_lines = al.invoice_id.line_ids.filtered(
+                        lambda l: l.account_id.id == credit_account.id
+                        and not l.reconciled
+                        and l.account_id.reconcile
+                    )
+
+                    if not inv_lines:
+                        continue
+
+                    pay_amount = al.amount_to_collect
+                    
+                    if pay_amount in pay_lines_dict and pay_lines_dict[pay_amount]:
+                        pay_line = pay_lines_dict[pay_amount].pop(0)
+                        (inv_lines + pay_line).reconcile()
+                        
+                        if not pay_lines_dict[pay_amount]:
+                            del pay_lines_dict[pay_amount]
+                    else:
+                        raise UserError(
+                            f"No matching receipt line found for invoice {al.invoice_id.name} "
+                            f"with amount {pay_amount}"
+                        )
+
+            rec.write({
+                "name": seq_name,
+                "journal_entry_id": move.id,
+                "state": "posted",
+            })
+   
+
 
     # =================================================
-    # SUPER APPROVER: CANCEL POSTED -> DRAFT (REVERSAL ENTRY + UNRECONCILE)
+    # SUPER APPROVER: CANCEL POSTED -> DRAFT
     # =================================================
     def action_super_cancel_posted_to_draft(self):
         if not self.env.user.has_group("cash_treasury.group_cash_super_approver"):
@@ -559,7 +754,38 @@ class CashTreasuryIn(models.Model):
 
             rec.reversal_entry_id = rev_move.id
 
-            # 3) Back to draft
+            # 3) Auto-reconcile original move with reversal move
+            # This prevents the original move from being reconciled again
+            
+            move_lines = move.line_ids.filtered(lambda l: not l.reconciled and l.account_id.reconcile)
+            rev_lines_list = rev_move.line_ids.filtered(lambda l: not l.reconciled and l.account_id.reconcile)
+            
+            lines_by_key = {}
+            for line in move_lines:
+                key = (line.account_id.id, line.partner_id.id or False)
+                lines_by_key.setdefault(key, []).append(('original', line))
+            
+            for line in rev_lines_list:
+                key = (line.account_id.id, line.partner_id.id or False)
+                lines_by_key.setdefault(key, []).append(('reversal', line))
+            
+            # Reconcile matching lines
+            for key, lines in lines_by_key.items():
+                if len(lines) >= 2:
+                    original_lines = [l for t, l in lines if t == 'original']
+                    reversal_lines = [l for t, l in lines if t == 'reversal']
+                    
+                    if original_lines and reversal_lines:
+                        for o_line in original_lines:
+                            for r_line in reversal_lines:
+                                if not o_line.reconciled and not r_line.reconciled:
+                                    if abs(o_line.balance + r_line.balance) < 0.01:
+                                        try:
+                                            (o_line + r_line).reconcile()
+                                        except Exception:
+                                            pass
+
+            # 4) Return to draft
             rec.write(
                 {
                     "state": "draft",
@@ -569,19 +795,10 @@ class CashTreasuryIn(models.Model):
                 }
             )
 
-            rec.message_post(body="Posted entry reversed by Super Approver and document returned to Draft.")
-
         return True
-
-    def action_submit(self):
-        for rec in self:
-            if rec.state != "draft":
-                continue
-            rec.state = "approved"
-
-
+            
 # =====================================================
-# ALLOCATION LINE (Customer Invoices)
+# ALLOCATION LINE
 # =====================================================
 class CashTreasuryInAllocation(models.Model):
     _name = "cash.treasury.in.allocation"

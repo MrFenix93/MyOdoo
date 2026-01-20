@@ -2,6 +2,36 @@ from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError, UserError
 from odoo.tools.float_utils import float_compare
 
+# =====================================================
+# ALLOCATION LINE
+# =====================================================
+
+class CashTreasuryOutMultiAccountLine(models.Model):
+    _name = 'cash.treasury.out.multi.account.line'
+    _description = 'Cash Treasury Out Multi Account Line'
+
+    cash_out_id = fields.Many2one(
+        'cash.treasury.out',
+        string="Cash Out",
+        required=True,
+        ondelete="cascade"
+    )
+
+    account_id = fields.Many2one(
+        'account.account',
+        string="Account",
+        required=True
+    )
+
+    amount = fields.Float(
+        string="Amount",
+        required=True
+    )
+
+    notes = fields.Char(
+        string="Notes"
+    )
+
 
 # =====================================================
 # CASH OUT
@@ -36,11 +66,36 @@ class CashTreasuryOut(models.Model):
         required=True,
         default="account",
     )
+    
+    multi_account = fields.Boolean(string="Multi Account", default=False)
+
+    multi_account_line_ids = fields.One2many(
+        'cash.treasury.out.multi.account.line',
+        'cash_out_id',
+        string="Multi Accounts",
+        copy=False
+    )
+    
 
     partner_id = fields.Many2one("res.partner")
     account_id = fields.Many2one("account.account")
+    
+    
+    amount_manual = fields.Monetary(
+        string="Amount",
+        currency_field="currency_id",
+        default=0.0,
+        required=False,
+    )
 
-    amount = fields.Monetary(required=True)
+
+    amount = fields.Monetary(
+        string="Amount",
+        compute="_compute_amount",
+        inverse="_inverse_amount",
+        store=True,
+        required=True,
+    )
     date = fields.Date(default=fields.Date.context_today, required=True, tracking=True)
     notes = fields.Text()
 
@@ -75,6 +130,12 @@ class CashTreasuryOut(models.Model):
         "account.account",
         compute="_compute_destination_account",
         store=True,
+    )
+    
+    destination_accounts_text = fields.Char(
+        string="Destination Accounts",
+        compute="_compute_destination_accounts_text",
+        store=False,
     )
 
     # -------------------------
@@ -228,12 +289,47 @@ class CashTreasuryOut(models.Model):
                     else False
                 )
 
-    @api.depends("amount", "allocation_line_ids.amount_to_pay")
+    @api.depends("amount_manual", "multi_account", "multi_account_line_ids.amount", "allocation_line_ids.amount_to_pay")
     def _compute_totals(self):
         for rec in self:
             total = sum(l.amount_to_pay or 0.0 for l in rec.allocation_line_ids)
             rec.total_allocated = total
             rec.allocation_diff = (rec.amount or 0.0) - total
+    
+
+    @api.depends(
+        "multi_account",
+        "multi_account_line_ids.account_id",
+        "multi_account_line_ids.amount",
+        "destination_account_id",
+    )
+    def _compute_destination_accounts_text(self):
+        for rec in self:
+            if rec.multi_account:
+                parts = []
+                for line in rec.multi_account_line_ids:
+                    if line.account_id:
+                        parts.append(
+                            f"{line.account_id.code or ''} {line.account_id.name} ({line.amount or 0.0})"
+                        )
+
+                if not parts:
+                    rec.destination_accounts_text = False
+                else:
+                    # show first 2 only
+                    if len(parts) > 2:
+                        rec.destination_accounts_text = " | ".join(parts[:2]) + " | ..."
+                    else:
+                        rec.destination_accounts_text = " | ".join(parts)
+
+            else:
+                if rec.destination_account_id:
+                    rec.destination_accounts_text = (
+                        f"{rec.destination_account_id.code or ''} {rec.destination_account_id.name}"
+                    )
+                else:
+                    rec.destination_accounts_text = False
+
 
     # =================================================
     # ONCHANGE
@@ -252,7 +348,19 @@ class CashTreasuryOut(models.Model):
         if self.bills_loaded:
             self.bills_loaded = False
             self.allocation_line_ids = [(5, 0, 0)]
-
+            
+    @api.onchange("multi_account")
+    def _onchange_multi_account(self):
+        if self.multi_account:
+            self.pay_to_type = "account"
+            self.partner_id = False
+            self.account_id = False
+            self.amount_manual = 0.0
+            self.bills_loaded = False
+            self.allocation_line_ids = [(5, 0, 0)]
+        else:
+            self.multi_account_line_ids = [(5, 0, 0)]        
+    
     # =================================================
     # CREATE METHOD
     # =================================================
@@ -273,6 +381,11 @@ class CashTreasuryOut(models.Model):
     # =================================================
     def action_load_vendor_bills(self):
         for rec in self:
+
+            # ? NEW: no load inv with Multi Account 
+            if rec.multi_account:
+                raise UserError("You cannot load Vendor Bills in Multi Account mode.")
+
             if rec.pay_to_type != "partner":
                 raise UserError("Load Vendor Bills is only allowed for Partner payments.")
             if not rec.partner_id:
@@ -313,10 +426,10 @@ class CashTreasuryOut(models.Model):
     # VALIDATIONS
     # =================================================
     
-    @api.constrains("amount")
+    @api.constrains("amount", "state")
     def _check_amount_positive(self):
         for rec in self:
-            if rec.amount is None or rec.amount <= 0:
+            if rec.state != "draft" and (rec.amount is None or rec.amount <= 0):
                 raise ValidationError(_("Amount must be greater than zero."))
                 
                 
@@ -338,6 +451,24 @@ class CashTreasuryOut(models.Model):
                     "When vendor bills are loaded, total allocated must equal Cash Out amount."
                 )
 
+    @api.constrains("pay_to_type", "multi_account")
+    def _check_multi_account_only_for_account(self):
+        for rec in self:
+            if rec.multi_account and rec.pay_to_type != "account":
+                raise ValidationError(_("Multi Account is only allowed when Pay To Type is Account."))
+                
+    @api.constrains("multi_account", "partner_id")
+    def _check_no_partner_in_multi_account(self):
+        for rec in self:
+            if rec.multi_account and rec.partner_id:
+                raise ValidationError(_("Multi Account does not allow Partner."))
+                
+    @api.constrains("multi_account", "amount_manual")
+    def _check_no_manual_amount_in_multi_account(self):
+        for rec in self:
+            if rec.multi_account and rec.amount_manual:
+                raise ValidationError(_("Manual Amount is not allowed in Multi Account mode."))                
+
     # =================================================
     # WORKFLOW
     # =================================================
@@ -346,7 +477,38 @@ class CashTreasuryOut(models.Model):
             if rec.state != "draft":
                 raise UserError("Only draft records can be reviewed.")
             rec.state = "reviewed"
+            
+    @api.depends(
+        "multi_account",
+        "multi_account_line_ids.amount",
+        "amount_manual",
+        "bills_loaded",
+        "allocation_line_ids.selected",
+        "allocation_line_ids.amount_to_pay",
+    )
+    def _compute_amount(self):
+        for rec in self:
+            if rec.multi_account:
+                rec.amount = sum(rec.multi_account_line_ids.mapped("amount")) or 0.0
 
+            elif rec.bills_loaded and rec.pay_to_type == "partner":
+                selected_lines = rec.allocation_line_ids.filtered(
+                    lambda l: l.selected and (l.amount_to_pay or 0.0) > 0
+                )
+                rec.amount = sum(selected_lines.mapped("amount_to_pay")) or 0.0
+
+            else:
+                rec.amount = rec.amount_manual or 0.0
+
+
+
+    def _inverse_amount(self):
+        for rec in self:
+            if rec.multi_account:
+                rec.amount = sum(rec.multi_account_line_ids.mapped("amount"))
+            else:
+                rec.amount_manual = rec.amount
+                
     def action_approve(self):
         for rec in self:
             if rec.state != "reviewed":
@@ -404,80 +566,111 @@ class CashTreasuryOut(models.Model):
             if not credit_account:
                 raise UserError("Journal has no default account.")
 
-            debit_account = (
-                rec.partner_id.property_account_payable_id
-                if rec.pay_to_type == "partner"
-                else rec.account_id
-            )
-            if not debit_account:
-                raise UserError("Missing destination account.")
-
             lines = []
 
-            # ---------- WITH BILLS ----------
-            if rec.bills_loaded:
-                allocations = rec.allocation_line_ids.filtered(
-                    lambda l: l.selected and l.amount_to_pay > 0
-                )
-                if not allocations:
-                    raise UserError("Please select invoices and enter amounts.")
+            # =====================================================
+            # ? MULTI ACCOUNT MODE (NO PARTNER)
+            # =====================================================
+            if rec.multi_account:
+                if rec.bills_loaded:
+                    raise UserError("Multi Account cannot be used with Vendor Bills allocation.")
 
-                total = sum(al.amount_to_pay for al in allocations)
+                if not rec.multi_account_line_ids:
+                    raise UserError("Please add Multi Account lines first.")
 
-                # ensure totals match (double safety)
-                if float_compare(
-                    total,
-                    rec.amount or 0.0,
-                    precision_rounding=rec.currency_id.rounding,
-                ) != 0:
-                    raise UserError("Allocated total must equal Cash Out amount.")
+                total = 0.0
+                for l in rec.multi_account_line_ids:
+                    if not l.account_id:
+                        raise UserError("Each Multi Account line must have an Account.")
+                    if not l.amount or l.amount <= 0:
+                        raise UserError("Each Multi Account line Amount must be greater than zero.")
 
-                for al in allocations:
+                    total += l.amount
+
                     lines.append(
-                        (
-                            0,
-                            0,
-                            {
+                        (0, 0, {
+                            "account_id": l.account_id.id,
+                            "partner_id": False,   # ? NO PARTNER
+                            "debit": l.amount,
+                            "credit": 0.0,
+                            "name": seq_name,
+                        })
+                    )
+
+                # Credit line
+                lines.append(
+                    (0, 0, {
+                        "account_id": credit_account.id,
+                        "credit": total,
+                        "debit": 0.0,
+                        "name": seq_name,
+                    })
+                )
+
+            # =====================================================
+            # ? NORMAL MODE (ACCOUNT/PARTNER)
+            # =====================================================
+            else:
+                debit_account = (
+                    rec.partner_id.property_account_payable_id
+                    if rec.pay_to_type == "partner"
+                    else rec.account_id
+                )
+                if not debit_account:
+                    raise UserError("Missing destination account.")
+
+                # ---------- WITH BILLS ----------
+                if rec.bills_loaded:
+                    allocations = rec.allocation_line_ids.filtered(
+                        lambda l: l.selected and l.amount_to_pay > 0
+                    )
+                    if not allocations:
+                        raise UserError("Please select invoices and enter amounts.")
+
+                    total = sum(al.amount_to_pay for al in allocations)
+
+                    if float_compare(
+                        total,
+                        rec.amount or 0.0,
+                        precision_rounding=rec.currency_id.rounding,
+                    ) != 0:
+                        raise UserError("Allocated total must equal Cash Out amount.")
+
+                    for al in allocations:
+                        lines.append(
+                            (0, 0, {
                                 "account_id": debit_account.id,
                                 "partner_id": rec.partner_id.id,
                                 "debit": al.amount_to_pay,
                                 "credit": 0.0,
                                 "name": seq_name,
-                            },
+                            })
                         )
-                    )
 
-            # ---------- WITHOUT BILLS ----------
-            else:
-                total = rec.amount
-                lines.append(
-                    (
-                        0,
-                        0,
-                        {
+                # ---------- WITHOUT BILLS ----------
+                else:
+                    total = rec.amount
+                    lines.append(
+                        (0, 0, {
                             "account_id": debit_account.id,
                             "partner_id": rec.partner_id.id if rec.pay_to_type == "partner" else False,
                             "debit": total,
                             "credit": 0.0,
                             "name": seq_name,
-                        },
+                        })
                     )
-                )
 
-            # ---------- CREDIT LINE ----------
-            lines.append(
-                (
-                    0,
-                    0,
-                    {
+                # Credit line
+                lines.append(
+                    (0, 0, {
                         "account_id": credit_account.id,
                         "credit": total,
                         "debit": 0.0,
                         "name": seq_name,
-                    },
+                    })
                 )
-            )
 
+            # ---------- CREATE MOVE ----------
             move = self.env["account.move"].create(
                 {
                     "move_type": "entry",
@@ -489,24 +682,58 @@ class CashTreasuryOut(models.Model):
             )
             move.action_post()
 
-            # ---------- RECONCILE ----------
-            if rec.bills_loaded:
-                for al in rec.allocation_line_ids.filtered(
-                    lambda l: l.selected and l.amount_to_pay > 0
+            # ---------- RECONCILE (ONLY FOR BILLS) ----------
+            if rec.bills_loaded and not rec.multi_account:
+                debit_account = rec.partner_id.property_account_payable_id
+
+                allocations = rec.allocation_line_ids.filtered(
+                    lambda l: l.selected and (l.amount_to_pay or 0.0) > 0
+                )
+
+                
+                pay_lines_dict = {}
+                for pay_line in move.line_ids.filtered(
+                    lambda l: l.account_id.id == debit_account.id
+                    and not l.reconciled
+                    and l.account_id.reconcile
+                    and l.partner_id.id == rec.partner_id.id
                 ):
+                    amount_key = pay_line.debit
+                    pay_lines_dict.setdefault(amount_key, []).append(pay_line)
+
+                
+                for al in allocations:
                     inv_lines = al.invoice_id.line_ids.filtered(
-                        lambda l: l.account_id.id == debit_account.id and not l.reconciled
+                        lambda l: l.account_id.id == debit_account.id
+                        and not l.reconciled
+                        and l.account_id.reconcile
                     )
-                    pay_lines = move.line_ids.filtered(
-                        lambda l: l.account_id.id == debit_account.id and not l.reconciled
-                    )
-                    (inv_lines + pay_lines).reconcile()
+
+                    if not inv_lines:
+                        continue
+
+                    pay_amount = al.amount_to_pay
+                    
+                    if pay_amount in pay_lines_dict and pay_lines_dict[pay_amount]:
+                        pay_line = pay_lines_dict[pay_amount].pop(0)
+                        (inv_lines + pay_line).reconcile()
+                        
+                        if not pay_lines_dict[pay_amount]:
+                            del pay_lines_dict[pay_amount]
+                    else:
+                        raise UserError(
+                            f"No matching payment line found for invoice {al.invoice_id.name} "
+                            f"with amount {pay_amount}"
+                        )
+                    
+                    
 
             rec.write({
                 "name": seq_name,
                 "journal_entry_id": move.id,
                 "state": "paid",
             })
+
 
     # =================================================
     # SUPER APPROVER: CANCEL PAID -> DRAFT (REVERSAL ENTRY + UNRECONCILE)
@@ -526,12 +753,12 @@ class CashTreasuryOut(models.Model):
             if not move:
                 raise UserError("No journal entry found on this document.")
 
-            # 1) Unreconcile move lines (so vendor bills residual returns)
+            # 1) Unreconcile move lines
             for line in move.line_ids:
                 if line.reconciled:
                     line.remove_move_reconcile()
 
-            # 2) Create reversal move (do NOT delete original move)
+            # 2) Create reversal move
             rev_lines = []
             for line in move.line_ids:
                 vals = {
@@ -559,7 +786,42 @@ class CashTreasuryOut(models.Model):
 
             rec.reversal_entry_id = rev_move.id
 
-            # 3) Back to draft (clear number + payment date + link to entry)
+            # 3) FIX: Auto-reconcile original move with reversal move
+            # This prevents the original move from being reconciled again
+            
+            # Get all unreconciled lines from both moves
+            move_lines = move.line_ids.filtered(lambda l: not l.reconciled and l.account_id.reconcile)
+            rev_lines_list = rev_move.line_ids.filtered(lambda l: not l.reconciled and l.account_id.reconcile)
+            
+            # Group lines by account and partner
+            lines_by_key = {}
+            for line in move_lines:
+                key = (line.account_id.id, line.partner_id.id or False)
+                lines_by_key.setdefault(key, []).append(('original', line))
+            
+            for line in rev_lines_list:
+                key = (line.account_id.id, line.partner_id.id or False)
+                lines_by_key.setdefault(key, []).append(('reversal', line))
+            
+            # Reconcile matching lines
+            for key, lines in lines_by_key.items():
+                if len(lines) >= 2:
+                    original_lines = [l for t, l in lines if t == 'original']
+                    reversal_lines = [l for t, l in lines if t == 'reversal']
+                    
+                    if original_lines and reversal_lines:
+                        # Try to reconcile lines with opposite balances
+                        for o_line in original_lines:
+                            for r_line in reversal_lines:
+                                if not o_line.reconciled and not r_line.reconciled:
+                                    if abs(o_line.balance + r_line.balance) < 0.01:
+                                        try:
+                                            (o_line + r_line).reconcile()
+                                        except Exception:
+                                            # If reconciliation fails, continue
+                                            pass
+
+            # 4) Return to draft
             rec.write(
                 {
                     "state": "draft",
@@ -568,8 +830,6 @@ class CashTreasuryOut(models.Model):
                     "payment_date": False,
                 }
             )
-
-            rec.message_post(body="Paid entry reversed by Super Approver and document returned to Draft.")
 
         return True
 
@@ -650,3 +910,4 @@ class CashTreasuryOutAllocation(models.Model):
             self.amount_to_pay = 0.0
         elif self.invoice_id:
             self.amount_to_pay = self.invoice_id.amount_residual
+
