@@ -536,6 +536,27 @@ class CashTreasuryIn(models.Model):
 
             lines = []
 
+            # ====== CURRENCY FIX (Journal Currency) ======
+            journal_currency = rec.journal_id.currency_id or rec.company_id.currency_id
+            company_currency = rec.company_id.currency_id
+
+            def _to_company(amount_foreign):
+                return journal_currency._convert(
+                    amount_foreign,
+                    company_currency,
+                    rec.company_id,
+                    rec.collection_date
+                )
+
+            def _cur_vals(amount_foreign):
+                if journal_currency == company_currency:
+                    return {}
+                return {
+                    "currency_id": journal_currency.id,
+                    "amount_currency": amount_foreign,
+                }
+            # ===========================================
+
             # =====================================================
             # ? MULTI ACCOUNT MODE (NO PARTNER)
             # =====================================================
@@ -559,9 +580,10 @@ class CashTreasuryIn(models.Model):
                         (0, 0, {
                             "account_id": l.account_id.id,
                             "partner_id": False,   # ? NO PARTNER
-                            "credit": l.amount,
+                            "credit": _to_company(l.amount),
                             "debit": 0.0,
                             "name": seq_name,
+                            **_cur_vals(-l.amount),
                         })
                     )
 
@@ -569,9 +591,10 @@ class CashTreasuryIn(models.Model):
                 lines.append(
                     (0, 0, {
                         "account_id": debit_account.id,
-                        "debit": total,
+                        "debit": _to_company(total),
                         "credit": 0.0,
                         "name": seq_name,
+                        **_cur_vals(total),
                     })
                 )
 
@@ -591,9 +614,10 @@ class CashTreasuryIn(models.Model):
                 lines.append(
                     (0, 0, {
                         "account_id": debit_account.id,
-                        "debit": rec.amount,
+                        "debit": _to_company(rec.amount),
                         "credit": 0.0,
                         "name": seq_name,
+                        **_cur_vals(rec.amount),
                     })
                 )
 
@@ -619,9 +643,10 @@ class CashTreasuryIn(models.Model):
                             (0, 0, {
                                 "account_id": credit_account.id,
                                 "partner_id": rec.partner_id.id,
-                                "credit": al.amount_to_collect,
+                                "credit": _to_company(al.amount_to_collect),
                                 "debit": 0.0,
                                 "name": seq_name,
+                                **_cur_vals(-al.amount_to_collect),
                             })
                         )
 
@@ -631,9 +656,10 @@ class CashTreasuryIn(models.Model):
                         (0, 0, {
                             "account_id": credit_account.id,
                             "partner_id": rec.partner_id.id if rec.receive_from_type == "partner" else False,
-                            "credit": rec.amount,
+                            "credit": _to_company(rec.amount),
                             "debit": 0.0,
                             "name": seq_name,
+                            **_cur_vals(-rec.amount),
                         })
                     )
 
@@ -700,7 +726,6 @@ class CashTreasuryIn(models.Model):
                 "journal_entry_id": move.id,
                 "state": "posted",
             })
-   
 
 
     # =================================================
